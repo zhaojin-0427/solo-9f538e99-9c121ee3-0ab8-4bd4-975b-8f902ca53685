@@ -54,6 +54,14 @@ header.topbar a {
 
 header.topbar .spacer { flex: 1; }
 
+header.topbar .nav-link {
+  font-weight: 500;
+  font-size: 14px;
+  color: #c8d6e5;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  padding-left: 16px;
+}
+
 header.topbar .hint {
   color: #c8d6e5;
   font-size: 13px;
@@ -239,3 +247,35 @@ textarea.mono { font-size: 13.5px; }
 .version-list .name { font-weight: 600; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
+
+.badge.never { background: #fdecea; color: var(--red); margin-left: 6px; }
+.badge.multi { background: #f3e8ff; color: #6b21a8; margin-left: 4px; }
+.badge.status-S { background: #e6f4ea; color: var(--green); }
+.badge.status-E { background: #eceff3; color: var(--grey); }
+.badge.status-U { background: #e8f0fe; color: var(--accent-dark); }
+
+.group-evidence {
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.group-evidence:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.table-scroll { overflow-x: auto; }
+.table-scroll table { min-width: 760px; }
+
+.pager {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.inline-form select,
+.lookup-form select {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  font: inherit;
+  background: #fff;
+  min-width: 110px;
+}

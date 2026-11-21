@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}规则覆盖分析 · 设备巡检记录{% endblock %}
+{% block content %}
+<p class="small"><a href="{{ url_for('index') }}">← 返回表版列表</a></p>
+<h1>规则覆盖分析</h1>
+<p class="subtitle">
+  选择一个已导入记录的表版，查看每个条件组在记录中的覆盖情况。分析只读已有记录，
+  不改变表版、答案与四类判定。
+</p>
+
+<div class="panel">
+  {% if versions %}
+  <table class="version-list">
+    <thead>
+      <tr>
+        <th>表版</th>
+        <th class="num">记录数</th>
+        <th>最近分析</th>
+        <th>快照状态</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for version in versions %}
+      {% set info = analyse_info[version.id] %}
+      <tr>
+        <td class="name">{{ version.name }}</td>
+        <td class="num">{{ version.record_count }}</td>
+        <td class="muted small">
+          {% if info %}{{ info.created_at }}（r{{ info.revision }}）{% else %}尚未分析{% endif %}
+        </td>
+        <td>
+          {% if info is none %}
+          <span class="badge pending">未分析</span>
+          {% elif info.stale %}
+          <span class="badge never">需重新分析</span>
+          {% else %}
+          <span class="badge answered">最新</span>
+          {% endif %}
+        </td>
+        <td>
+          <a class="btn tiny secondary" href="{{ url_for('coverage_page', version_id=version.id) }}">进入</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if all_versions|length > versions|length %}
+  <p class="muted small" style="margin-bottom:0;">
+    另有 {{ all_versions|length - versions|length }} 个表版尚未导入记录，导入后才能分析。
+  </p>
+  {% endif %}
+  {% else %}
+  <p class="empty" style="margin:0;">
+    还没有已导入记录的表版。请先在表版页上传 CSV，再回到这里分析。
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

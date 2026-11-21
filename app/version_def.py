@@ -134,16 +134,25 @@ def loads(raw: str) -> dict:
     return json.loads(raw)
 
 
+def describe_group(definition: dict, index: int, group_index: int) -> str:
+    """Human readable description of one condition group of an item."""
+    group = definition["items"][index]["groups"][group_index]
+    parts = [
+        f"第{ref + 1}项“{definition['items'][ref]['name']}”={value}"
+        for ref, value in group
+    ]
+    if not parts:
+        return "（无条件组）"
+    return " 且 ".join(parts)
+
+
 def describe_item(definition: dict, index: int) -> str:
     """Human readable condition description for the version page."""
     item = definition["items"][index]
     if item["unconditional"]:
         return "始终显示"
-    groups_desc = []
-    for group in item["groups"]:
-        parts = [
-            f"第{ref + 1}项“{definition['items'][ref]['name']}”={value}"
-            for ref, value in group
-        ]
-        groups_desc.append(" 且 ".join(parts))
+    groups_desc = [
+        describe_group(definition, index, group_index)
+        for group_index in range(len(item["groups"]))
+    ]
     return " 或 ".join(f"({part})" for part in groups_desc)

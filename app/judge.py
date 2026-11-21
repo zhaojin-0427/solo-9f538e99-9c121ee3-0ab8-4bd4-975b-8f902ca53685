@@ -59,8 +59,21 @@ def _masks(variable_count: int) -> tuple[int, list[int]]:
     return result
 
 
-def judge(definition: dict, answers: dict[int, str]) -> list[str]:
-    """Classify each item; ``answers`` maps item index to 是/否."""
+def evaluate_masks(
+    definition: dict, answers: dict[int, str]
+) -> tuple[int, list[int], list[list[int]], list[str]]:
+    """Evaluate one record over every blank-fill completion.
+
+    Returns ``(all_ones, displayed, group_masks, categories)``.
+
+    * ``all_ones`` has one bit per possible completion of the blank items.
+    * ``displayed[index]`` has a bit set for each completion where the item
+      is displayed.
+    * ``group_masks[index][group]`` has a bit set for each completion where
+      every requirement of that condition group holds.  Referenced items must
+      also be displayed, matching the display rules used for judging.
+    * ``categories`` is the usual four-category judgment for the record.
+    """
     items = definition["items"]
     item_count = len(items)
     blank = [index for index in range(item_count) if index not in answers]
@@ -68,6 +81,7 @@ def judge(definition: dict, answers: dict[int, str]) -> list[str]:
     variable_of = {item_index: position for position, item_index in enumerate(blank)}
 
     displayed: list[int] = [0] * item_count
+    group_masks: list[list[int]] = [[] for _ in items]
 
     for index, item in enumerate(items):
         if item["unconditional"]:
@@ -75,6 +89,7 @@ def judge(definition: dict, answers: dict[int, str]) -> list[str]:
             continue
 
         shown_mask = 0
+        item_groups: list[int] = []
         for group in item["groups"]:
             group_mask = all_ones
             for reference, required in group:
@@ -94,8 +109,10 @@ def judge(definition: dict, answers: dict[int, str]) -> list[str]:
                 group_mask &= reference_mask & value_mask
                 if group_mask == 0:
                     break
+            item_groups.append(group_mask & all_ones)
             shown_mask |= group_mask
 
+        group_masks[index] = item_groups
         displayed[index] = shown_mask & all_ones
 
     categories: list[str] = []
@@ -107,7 +124,12 @@ def judge(definition: dict, answers: dict[int, str]) -> list[str]:
             categories.append("answered" if index in answers else "missing")
         else:
             categories.append("pending")
-    return categories
+    return all_ones, displayed, group_masks, categories
+
+
+def judge(definition: dict, answers: dict[int, str]) -> list[str]:
+    """Classify each item; ``answers`` maps item index to 是/否."""
+    return evaluate_masks(definition, answers)[3]
 
 
 def display_under_answers(definition: dict, answers: dict[int, str]) -> list[bool]:
@@ -146,6 +168,7 @@ __all__ = [
     "CATEGORIES",
     "CATEGORY_LABELS",
     "judge",
+    "evaluate_masks",
     "display_under_answers",
     "count_categories",
     "loads",

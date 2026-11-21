@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}规则覆盖分析 · {{ version.name }}{% endblock %}
+{% block content %}
+<p class="small">
+  <a href="{{ url_for('version_detail', version_id=version.id) }}">← 返回 {{ version.name }}</a>
+  ·
+  <a href="{{ url_for('coverage_index') }}">全部表版</a>
+</p>
+<h1>规则覆盖分析</h1>
+<p class="subtitle">
+  {{ version.name }} · 只读分析，不改变表版、答案与四类判定
+</p>
+
+{% if version.record_count == 0 %}
+<div class="panel">
+  <p class="empty" style="margin:0;">该表版还没有导入记录，暂无可分析内容。</p>
+</div>
+{% else %}
+<div class="panel">
+  <div class="actions" style="justify-content:space-between;">
+    <div>
+      {% if analysis %}
+      <h2 style="margin:0 0 6px;">最近一次分析</h2>
+      <p class="muted small" style="margin:0;">
+        分析于 {{ analysis.created_at }} · 记录快照 {{ analysis.record_count }} 条
+        · 快照版本 r{{ analysis.revision }} · 当前版本 r{{ current_revision }}
+      </p>
+      {% else %}
+      <h2 style="margin:0 0 6px;">尚未分析</h2>
+      <p class="muted small" style="margin:0;">
+        按每条记录的原始答案与留空补答可能性，统计每个条件组被满足、被排除或无法确定的记录数。
+      </p>
+      {% endif %}
+    </div>
+    <form method="post" action="{{ url_for('coverage_run', version_id=version.id) }}">
+      <button class="btn" type="submit">
+        {% if analysis %}重新分析{% else %}开始分析{% endif %}
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if stale %}
+<div class="flash error">
+  记录在本次分析后有答案更正（快照 r{{ analysis.revision }}，当前 r{{ current_revision }}），
+  下列计数与明细来自旧快照，仅供参考，请重新分析。
+</div>
+{% endif %}
+
+{% if analysis %}
+<div class="panel">
+  <h2 style="margin-top:0;">条件组覆盖统计</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>检查项</th>
+        <th>条件组</th>
+        <th class="num">满足</th>
+        <th class="num">排除</th>
+        <th class="num">无法确定</th>
+        <th class="num">记录数</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        {% for group in row.groups %}
+        <tr>
+          {% if loop.first %}
+          <td class="num" rowspan="{{ row.groups|length }}">{{ row.number }}</td>
+          <td rowspan="{{ row.groups|length }}">
+            <a href="{{ url_for('coverage_item', version_id=version.id, item_index=row.index, analysis_id=analysis.id) }}">{{ row.name }}</a>
+            {% if row.multi_count %}
+            <div class="muted small">多组命中记录 {{ row.multi_count }} 条</div>
+            {% endif %}
+          </td>
+          {% endif %}
+          <td>
+            {% if row.groups|length > 1 %}{{ group.label }}：{% endif %}{{ group.condition }}
+            {% if group.never %}<span class="badge never">从未满足</span>{% endif %}
+          </td>
+          <td class="num count-answered">{{ group.satisfied }}</td>
+          <td class="num count-exempt">{{ group.excluded }}</td>
+          <td class="num count-pending">{{ group.undetermined }}</td>
+          <td class="num">{{ group.total }}</td>
+          <td class="small">
+            {% if group.never %}
+            <a href="{{ url_for('coverage_item', version_id=version.id, item_index=row.index, analysis_id=analysis.id, group=group.group_index, status='E') }}">查看记录</a>
+            {% else %}
+            <a href="{{ url_for('coverage_item', version_id=version.id, item_index=row.index, analysis_id=analysis.id, group=group.group_index) }}">明细</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="legend">
+    <span><strong>满足</strong>：所有补答情形下该组都成立</span>
+    <span><strong>排除</strong>：所有补答情形下该组都不成立</span>
+    <span><strong>无法确定</strong>：是否成立取决于留空项补答</span>
+    <span>计数与明细同属快照 r{{ analysis.revision }}</span>
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">从未可满足的条件组</h2>
+  {% if never_rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>检查项</th>
+        <th>条件组</th>
+        <th class="num">记录数</th>
+        <th>记录号</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in never_rows %}
+      <tr>
+        <td class="num">{{ entry.item_number }}</td>
+        <td>
+          <a href="{{ url_for('coverage_item', version_id=version.id, item_index=entry.item_index, analysis_id=analysis.id, group=entry.group_index, status='E') }}">{{ entry.item_name }}</a>
+        </td>
+        <td>{{ entry.condition }}</td>
+        <td class="num">{{ entry.record_count }}</td>
+        <td class="mono small">
+          {% if entry.all_record_nos %}
+          {{ entry.all_record_nos[:50]|join('、') }}{% if entry.all_record_nos|length > 50 %}……（共 {{ entry.all_record_nos|length }} 条，明细页可逐页查看）{% endif %}
+          {% else %}（无记录）{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="legend">
+    <span>“从未满足”指该组在快照全部记录的原始答案与补答组合下均不成立；点击检查项可查看逐条依据。</span>
+  </div>
+  {% else %}
+  <p class="empty" style="margin:0;">所有条件组都至少能在一条记录中满足。</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">同一记录可能命中多个条件组的检查项</h2>
+  {% if analysis.result.multi_groups %}
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>检查项</th>
+        <th class="num">涉及记录</th>
+        <th>示例记录号（不同补答下可命中的条件组）</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in analysis.result.multi_groups %}
+      {% set item = rows[entry.item_index] %}
+      <tr>
+        <td class="num">{{ entry.item_index + 1 }}</td>
+        <td>
+          <a href="{{ url_for('coverage_item', version_id=version.id, item_index=entry.item_index, analysis_id=analysis.id) }}">{{ item.name }}</a>
+        </td>
+        <td class="num">{{ entry.multi_count }}</td>
+        <td class="small">
+          {% for example in entry.examples %}
+          <div>
+            <span class="mono">{{ example.record_no }}</span>
+            <span class="muted">→ 第 {% for group_index in example.groups %}{{ group_index + 1 }}{% if not loop.last %}、{% endif %}{% endfor %} 组</span>
+          </div>
+          {% endfor %}
+          {% if entry.multi_count > entry.examples|length %}
+          <div class="muted">……更多记录见检查项明细。</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="legend">
+    <span>“多组命中”指同一记录在不同补答下可满足两个及以上条件组，需人工确认以哪组为准。</span>
+  </div>
+  {% else %}
+  <p class="empty" style="margin:0;">没有记录会在不同补答下命中多个条件组。</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

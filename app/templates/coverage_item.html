@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}覆盖依据 · {{ item_name }} · {{ version.name }}{% endblock %}
+{% block content %}
+<p class="small">
+  <a href="{{ url_for('coverage_page', version_id=version.id) }}">← 返回规则覆盖分析</a>
+  ·
+  <a href="{{ url_for('version_detail', version_id=version.id) }}">{{ version.name }}</a>
+</p>
+<h1>第 {{ item_number }} 项 {{ item_name }}</h1>
+<p class="subtitle">
+  显示条件：{{ condition }} · 快照 r{{ analysis.revision }}（{{ analysis.created_at }}）
+</p>
+
+{% if stale %}
+<div class="flash error">
+  本次分析后记录有答案更正（快照 r{{ analysis.revision }}，当前 r{{ current_revision }}），
+  以下明细来自旧快照，请返回重新分析。
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2 style="margin-top:0;">条件组统计</h2>
+  {% if group_rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>条件组</th>
+        <th>条件</th>
+        <th class="num">满足</th>
+        <th class="num">排除</th>
+        <th class="num">无法确定</th>
+        <th class="num">记录数</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for group in group_rows %}
+      <tr>
+        <td>{{ group.label }}</td>
+        <td>{{ group.condition }}</td>
+        <td class="num count-answered">{{ group.satisfied }}</td>
+        <td class="num count-exempt">{{ group.excluded }}</td>
+        <td class="num count-pending">{{ group.undetermined }}</td>
+        <td class="num">{{ group.total }}</td>
+        <td class="small">
+          <a href="{{ url_for('coverage_item', version_id=version.id, item_index=item.index, analysis_id=analysis.id, group=group.group_index) }}">仅看本组</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty" style="margin:0;">该检查项没有条件组（始终显示）。</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">记录明细</h2>
+  <form method="get"
+        action="{{ url_for('coverage_item', version_id=version.id, item_index=item.index) }}"
+        class="lookup-form" style="margin-bottom:14px;">
+    <input type="hidden" name="analysis_id" value="{{ analysis.id }}">
+    <label class="field">
+      <span class="label-text">按记录号筛选</span>
+      <input type="text" name="record_no" value="{{ record_filter }}" placeholder="留空显示全部">
+    </label>
+    <label class="field" style="flex:0 0 auto;">
+      <span class="label-text">条件组</span>
+      <select name="group">
+        <option value="">全部</option>
+        {% for group in group_rows %}
+        <option value="{{ group.group_index }}" {% if group_filter == group.group_index %}selected{% endif %}>{{ group.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="field" style="flex:0 0 auto;">
+      <span class="label-text">状态</span>
+      <select name="status">
+        <option value="">全部</option>
+        {% for code, label in status_labels.items() %}
+        <option value="{{ code }}" {% if status == code %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn secondary" type="submit">筛选</button>
+  </form>
+
+  <p class="muted small">
+    共 {{ total_matches }} 条记录{% if record_filter %}（记录号“{{ record_filter }}”）{% endif %}，
+    当前第 {{ page }} / {{ page_count }} 页（每页 {{ page_size }} 条）。
+    条件组状态：满足 / 排除 / 无法确定；数字列为各检查项原答案（· 表示留空），
+    点击记录号可打开记录页核对答案。
+  </p>
+
+  {% if record_rows %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>记录号</th>
+        {% for header in answer_headers %}
+        <th class="num" title="{{ header.name }}">{{ header.number }}</th>
+        {% endfor %}
+        <th>条件组状态与依据</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in record_rows %}
+      <tr>
+        <td class="mono">
+          <a href="{{ url_for('record_detail', version_id=version.id, record_no=record.record_no) }}">{{ record.record_no }}</a>
+          {% if record.is_multi %}<span class="badge multi">多组命中</span>{% endif %}
+        </td>
+        {% for answer in record.answers %}
+        <td class="num answer-cell" title="{{ answer_headers[loop.index0].name }}">{% if answer %}{{ answer }}{% else %}<span class="blank">·</span>{% endif %}</td>
+        {% endfor %}
+        <td>
+          {% for status_entry in record.evidence %}
+          <div class="group-evidence">
+            <span class="badge status-{{ status_entry.code }}">{{ status_entry.status_label }}</span>
+            <strong>第 {{ status_entry.group_index + 1 }} 组</strong>
+            <span class="small">{{ status_entry.condition }}</span>
+            <div class="muted small">{{ status_entry.text }}</div>
+          </div>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="empty" style="margin:0;">没有符合条件的记录。</p>
+  {% endif %}
+
+  {% if page_count > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+    <a class="btn tiny secondary" href="{{ url_for('coverage_item', version_id=version.id, item_index=item.index, analysis_id=analysis.id, group=group_filter, status=status, record_no=record_filter, page=page - 1) }}">上一页</a>
+    {% endif %}
+    <span class="muted small">第 {{ page }} / {{ page_count }} 页</span>
+    {% if page < page_count %}
+    <a class="btn tiny secondary" href="{{ url_for('coverage_item', version_id=version.id, item_index=item.index, analysis_id=analysis.id, group=group_filter, status=status, record_no=record_filter, page=page + 1) }}">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

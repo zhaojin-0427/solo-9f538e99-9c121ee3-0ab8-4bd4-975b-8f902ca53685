@@ -14,6 +14,7 @@ from pathlib import Path
 
 from flask import current_app, g
 
+from .coverage import analyse
 from .judge import CATEGORIES, judge
 from .version_def import loads
 
@@ -48,6 +49,22 @@ CREATE TABLE IF NOT EXISTS item_counts (
     PRIMARY KEY (version_id, item_index)
 );
 
+CREATE TABLE IF NOT EXISTS version_revisions (
+    version_id INTEGER PRIMARY KEY REFERENCES versions(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    record_count INTEGER NOT NULL,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_analyses_version ON analyses(version_id, id);
+
 CREATE TRIGGER IF NOT EXISTS versions_immutable_update
 BEFORE UPDATE ON versions
 BEGIN
@@ -67,6 +84,10 @@ CATEGORY_COLUMNS = {
     "exempt": "exempt",
     "pending": "pending",
 }
+
+# Keep only a few recent analyses per version so repeated runs cannot grow the
+# database without bound.  The newest analysis is the one the pages link to.
+ANALYSIS_HISTORY = 5
 
 
 class DataError(Exception):
@@ -203,6 +224,148 @@ def get_counts(version_id: int, item_count: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Rule coverage analyses
+
+
+def _ensure_revision_row(connection: sqlite3.Connection, version_id: int) -> None:
+    connection.execute(
+        "INSERT OR IGNORE INTO version_revisions (version_id, revision)"
+        " VALUES (?, 0)",
+        (version_id,),
+    )
+
+
+def get_revision(version_id: int) -> int:
+    connection = get_db()
+    row = connection.execute(
+        "SELECT revision FROM version_revisions WHERE version_id = ?",
+        (version_id,),
+    ).fetchone()
+    return int(row["revision"]) if row is not None else 0
+
+
+def _bump_revision(connection: sqlite3.Connection, version_id: int) -> None:
+    _ensure_revision_row(connection, version_id)
+    connection.execute(
+        "UPDATE version_revisions SET revision = revision + 1"
+        " WHERE version_id = ?",
+        (version_id,),
+    )
+
+
+def run_analysis(version_id: int) -> dict:
+    """Analyse stored records under one consistent snapshot.
+
+    Reads the definition and all records inside a single read transaction,
+    and only afterwards writes the result row.  The result carries the
+    revision observed while reading; the exact same revision is written back
+    if no correction has happened meanwhile, so a stale snapshot can never be
+    stored as current.
+    """
+    connection = get_db()
+    try:
+        connection.execute("BEGIN")
+        version_row = connection.execute(
+            "SELECT definition FROM versions WHERE id = ?", (version_id,)
+        ).fetchone()
+        if version_row is None:
+            raise DataError("表版不存在。")
+        definition = loads(version_row["definition"])
+        revision_row = connection.execute(
+            "SELECT revision FROM version_revisions WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()
+        revision = int(revision_row["revision"]) if revision_row is not None else 0
+        records = [
+            (row["record_no"], json.loads(row["answers"]))
+            for row in connection.execute(
+                "SELECT record_no, answers FROM records"
+                " WHERE version_id = ? ORDER BY id",
+                (version_id,),
+            ).fetchall()
+        ]
+        connection.execute("COMMIT")
+    except Exception:
+        if _in_transaction(connection):
+            connection.execute("ROLLBACK")
+        raise
+
+    snapshot = analyse(definition, records)
+    result = dict(snapshot)
+    result["version_id"] = version_id
+    result["revision"] = revision
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _ensure_revision_row(connection, version_id)
+        current = int(
+            connection.execute(
+                "SELECT revision FROM version_revisions WHERE version_id = ?",
+                (version_id,),
+            ).fetchone()["revision"]
+        )
+        if current != revision:
+            connection.execute("ROLLBACK")
+            raise DataError(
+                "分析期间有答案被更正，未保存本次结果，请重新分析。"
+            )
+        cursor = connection.execute(
+            "INSERT INTO analyses"
+            " (version_id, revision, record_count, result, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                version_id,
+                revision,
+                snapshot["record_count"],
+                json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                utcnow(),
+            ),
+        )
+        new_id = int(cursor.lastrowid)
+        connection.execute(
+            "DELETE FROM analyses WHERE version_id = ? AND id NOT IN ("
+            " SELECT id FROM analyses WHERE version_id = ?"
+            " ORDER BY id DESC LIMIT ?)",
+            (version_id, version_id, ANALYSIS_HISTORY),
+        )
+        _commit(connection)
+        return {"id": new_id, "result": result}
+    except Exception:
+        if _in_transaction(connection):
+            connection.execute("ROLLBACK")
+        raise
+
+
+def _analyse_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "version_id": row["version_id"],
+        "revision": row["revision"],
+        "record_count": row["record_count"],
+        "created_at": row["created_at"],
+        "result": json.loads(row["result"]),
+    }
+
+
+def get_latest_analysis(version_id: int) -> dict | None:
+    connection = get_db()
+    row = connection.execute(
+        "SELECT * FROM analyses WHERE version_id = ? ORDER BY id DESC LIMIT 1",
+        (version_id,),
+    ).fetchone()
+    return _analyse_row(row) if row is not None else None
+
+
+def get_analysis(version_id: int, analysis_id: int) -> dict | None:
+    connection = get_db()
+    row = connection.execute(
+        "SELECT * FROM analyses WHERE id = ? AND version_id = ?",
+        (analysis_id, version_id),
+    ).fetchone()
+    return _analyse_row(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
 # Records / import
 
 
@@ -273,6 +436,7 @@ def import_records(
                 for index, entry in enumerate(counts)
             ],
         )
+        _ensure_revision_row(connection, version_id)
         _commit(connection)
         return len(prepared)
     except Exception:
@@ -306,6 +470,8 @@ def correct_answer(
 
     Returns the new categories.  The record update and the count update share
     one transaction; on failure the exception propagates and nothing changes.
+    The version's analysis revision is bumped in the same transaction so any
+    existing coverage analysis is reported as stale.
     """
     connection = get_db()
     try:
@@ -366,6 +532,8 @@ def correct_answer(
                 " WHERE version_id = ? AND item_index = ?",
                 (version_id, index),
             )
+
+        _bump_revision(connection, version_id)
 
         _commit(connection)
         return new_categories

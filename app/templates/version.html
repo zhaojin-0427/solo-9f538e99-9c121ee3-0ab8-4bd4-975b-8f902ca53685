@@ -23,6 +23,7 @@
   {% else %}
   <div class="actions">
     <a class="btn secondary" href="{{ url_for('record_lookup', version_id=version.id) }}">按记录号查看</a>
+    <a class="btn secondary" href="{{ url_for('coverage_page', version_id=version.id) }}">规则覆盖分析</a>
     <span class="muted small">记录已导入，不可重复导入。</span>
   </div>
   {% endif %}

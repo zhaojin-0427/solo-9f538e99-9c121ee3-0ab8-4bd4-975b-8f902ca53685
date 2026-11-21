@@ -16,7 +16,7 @@ from flask import (
 )
 from werkzeug.exceptions import RequestEntityTooLarge
 
-from . import db
+from . import coverage, db
 from .csv_import import MAX_BYTES, CsvError, parse_csv
 from .judge import CATEGORIES, CATEGORY_LABELS
 from .version_def import describe_item, parse_definition
@@ -268,6 +268,261 @@ def create_app(config: dict | None = None) -> Flask:
                 record_no=record_no,
                 corrected=1,
             )
+        )
+
+    @app.get("/coverage")
+    def coverage_index():
+        all_versions = db.list_versions()
+        versions = [
+            version for version in all_versions if version["record_count"] > 0
+        ]
+        analyse_info = {}
+        for version in versions:
+            analysis = db.get_latest_analysis(version["id"])
+            if analysis is None:
+                analyse_info[version["id"]] = None
+                continue
+            analyse_info[version["id"]] = {
+                "created_at": analysis["created_at"],
+                "revision": analysis["revision"],
+                "record_count": analysis["record_count"],
+                "stale": analysis["revision"] != db.get_revision(version["id"]),
+            }
+        return render_template(
+            "coverage_index.html",
+            versions=versions,
+            analyse_info=analyse_info,
+            all_versions=all_versions,
+        )
+
+    @app.get("/versions/<int:version_id>/coverage")
+    def coverage_page(version_id: int):
+        version = db.get_version(version_id)
+        if version is None:
+            abort(404)
+
+        definition = version["definition"]
+        analysis = db.get_latest_analysis(version_id)
+        current_revision = db.get_revision(version_id)
+        stale = analysis is not None and analysis["revision"] != current_revision
+
+        rows = []
+        never_rows = []
+        if analysis is not None:
+            for item in analysis["result"]["items"]:
+                definition_item = definition["items"][item["index"]]
+                groups = []
+                for group in item["groups"]:
+                    groups.append(
+                        {
+                            **group,
+                            "label": f"第 {group['group_index'] + 1} 组",
+                        }
+                    )
+                rows.append(
+                    {
+                        "index": item["index"],
+                        "number": item["index"] + 1,
+                        "name": definition_item["name"],
+                        "condition": describe_item(definition, item["index"]),
+                        "groups": groups,
+                        "multi_count": item["multi_count"],
+                        "multi_examples": item["multi_examples"],
+                    }
+                )
+
+            for entry in analysis["result"]["never_groups"]:
+                record_positions = [
+                    position
+                    for position, status in enumerate(
+                        analysis["result"]["items"][entry["item_index"]][
+                            "groups"
+                        ][entry["group_index"]]["status"]
+                    )
+                    if status == "E"
+                ]
+                numbers = [
+                    analysis["result"]["record_nos"][position]
+                    for position in record_positions
+                ]
+                never_rows.append(
+                    {
+                        **entry,
+                        "item_number": entry["item_index"] + 1,
+                        "item_name": definition["items"][entry["item_index"]][
+                            "name"
+                        ],
+                        "all_record_nos": numbers,
+                    }
+                )
+
+        return render_template(
+            "coverage.html",
+            version=version,
+            analysis=analysis,
+            stale=stale,
+            current_revision=current_revision,
+            rows=rows,
+            never_rows=never_rows,
+            status_labels=coverage.STATUS_LABELS,
+        )
+
+    @app.post("/versions/<int:version_id>/coverage")
+    def coverage_run(version_id: int):
+        version = db.get_version(version_id)
+        if version is None:
+            abort(404)
+        if version["record_count"] == 0:
+            flash("该表版还没有导入记录，暂无可分析内容。", "error")
+            return redirect(url_for("coverage_page", version_id=version_id))
+        try:
+            db.run_analysis(version_id)
+        except db.DataError as exc:
+            flash(f"分析未完成：{exc}", "error")
+        except Exception:
+            app.logger.exception("run_analysis failed")
+            flash("分析失败，未保存任何结果，请稍后重试。", "error")
+        else:
+            flash("规则覆盖分析完成，计数与明细来自同一份记录快照。", "success")
+        return redirect(url_for("coverage_page", version_id=version_id))
+
+    @app.get("/versions/<int:version_id>/coverage/items/<int:item_index>")
+    def coverage_item(version_id: int, item_index: int):
+        version = db.get_version(version_id)
+        if version is None:
+            abort(404)
+        definition = version["definition"]
+        if not 0 <= item_index < len(definition["items"]):
+            abort(404)
+
+        analysis_id = request.args.get("analysis_id", type=int)
+        if analysis_id is not None:
+            analysis = db.get_analysis(version_id, analysis_id)
+        else:
+            analysis = db.get_latest_analysis(version_id)
+        if analysis is None:
+            abort(404)
+
+        result = analysis["result"]
+        item = result["items"][item_index]
+        current_revision = db.get_revision(version_id)
+        stale = analysis["revision"] != current_revision
+
+        status = request.args.get("status") or ""
+        if status not in ("", "S", "E", "U"):
+            status = ""
+        group_filter = request.args.get("group", type=int)
+        if group_filter is not None and not (
+            0 <= group_filter < len(item["groups"])
+        ):
+            group_filter = None
+        record_filter = (request.args.get("record_no") or "").strip()
+        page = max(request.args.get("page", type=int) or 1, 1)
+
+        group_rows = []
+        for group in item["groups"]:
+            group_rows.append(
+                {
+                    **group,
+                    "label": f"第 {group['group_index'] + 1} 组",
+                }
+            )
+
+        matches = []
+        for position, record_no in enumerate(result["record_nos"]):
+            if record_filter and record_no != record_filter:
+                continue
+            statuses = []
+            matched = status == ""
+            for group in item["groups"]:
+                if (
+                    group_filter is not None
+                    and group["group_index"] != group_filter
+                ):
+                    continue
+                code = group["status"][position]
+                if status and code == status:
+                    matched = True
+                statuses.append(
+                    {
+                        "group_index": group["group_index"],
+                        "label": f"第 {group['group_index'] + 1} 组",
+                        "code": code,
+                        "status_label": coverage.STATUS_LABELS[code],
+                        "selected": group_filter == group["group_index"],
+                    }
+                )
+            if not matched:
+                continue
+            matches.append((position, record_no, statuses))
+
+        total_matches = len(matches)
+        page_count = max(
+            (total_matches + coverage.EVIDENCE_PAGE_SIZE - 1)
+            // coverage.EVIDENCE_PAGE_SIZE,
+            1,
+        )
+        page = min(page, page_count)
+        start = (page - 1) * coverage.EVIDENCE_PAGE_SIZE
+        end = start + coverage.EVIDENCE_PAGE_SIZE
+        record_rows = []
+        for position, record_no, statuses in matches[start:end]:
+            explanations = coverage.explain_record(
+                definition, result["answers"][position], item_index
+            )
+            evidence = []
+            for status_entry in statuses:
+                explanation = explanations[status_entry["group_index"]]
+                evidence.append(
+                    {
+                        **status_entry,
+                        "condition": explanation["condition"],
+                        "text": explanation["text"],
+                    }
+                )
+            record_rows.append(
+                {
+                    "record_no": record_no,
+                    "answers": coverage.decode_answers(
+                        result["answers"][position]
+                    ),
+                    "evidence": evidence,
+                    "is_multi": item["multi_status"][position] == "M",
+                }
+            )
+        page_count = max(
+            (total_matches + coverage.EVIDENCE_PAGE_SIZE - 1)
+            // coverage.EVIDENCE_PAGE_SIZE,
+            1,
+        )
+
+        return render_template(
+            "coverage_item.html",
+            version=version,
+            analysis=analysis,
+            stale=stale,
+            item=item,
+            item_number=item_index + 1,
+            item_name=definition["items"][item_index]["name"],
+            condition=describe_item(definition, item_index),
+            group_rows=group_rows,
+            current_revision=current_revision,
+            record_rows=record_rows,
+            total_matches=total_matches,
+            page=page,
+            page_count=page_count,
+            page_size=coverage.EVIDENCE_PAGE_SIZE,
+            status=status,
+            group_filter=group_filter,
+            record_filter=record_filter,
+            status_labels=coverage.STATUS_LABELS,
+            answer_headers=[
+                {
+                    "number": index + 1,
+                    "name": definition["items"][index]["name"],
+                }
+                for index in range(len(definition["items"]))
+            ],
         )
 
     return app
